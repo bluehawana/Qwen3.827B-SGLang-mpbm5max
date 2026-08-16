@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
-# Track B: serve Qwen3.8-27B via SGLang's native MLX backend on Apple Silicon.
+# Track B: serve a model via SGLang's native MLX backend on Apple Silicon.
 #
 # Build first with ../build-sglang-metal.sh (needs Xcode Metal Toolchain +
 # either Rust or SGLANG_BUILD_RUST_EXTS=none — the build script handles both).
 #
-#   ./serve-sglang-metal.sh                     # 8-bit local snapshot, port 30000
-#   PORT=30000 MODEL=mlx-community/Qwen3.8-27B-8bit ./serve-sglang-metal.sh
+# STATUS (2026-08, tested): SGLang builds and launches on Metal, but does NOT
+# yet serve **Qwen3.8-27B** on this backend. Two model-specific walls:
+#   1. Qwen3.8 is a hybrid-GDN model → default mamba `extra_buffer` cache is
+#      CUDA-only. Worked around with `no_buffer` (flags below).
+#   2. The mlx-community Qwen3.8-27B checkpoints are VLMs
+#      (Qwen3_5ForConditionalGeneration). SGLang-MLX auto-enables multimodal
+#      for that arch, can't wire up the MLX image processor, and offers no CLI
+#      flag to force text-only. → load fails: "Unrecognized image processor".
+# So for Qwen3.8-27B today, use Track A (oMLX + ../gateway.py). This script is
+# kept for when SGLang's MLX VLM/GDN support matures, and works now for
+# pure-text MLX models (set MODEL to e.g. a Llama/Qwen3-dense MLX build).
 #
-# WARNING: don't run this at the same time as oMLX — two 27B models on one GPU
+#   MODEL=mlx-community/Meta-Llama-3.1-8B-Instruct-8bit ./serve-sglang-metal.sh
+#
+# WARNING: don't run this at the same time as oMLX — two models on one GPU
 # starve each other. Stop oMLX (or your qclaude session) first for a fair run.
 set -euo pipefail
 

@@ -112,8 +112,25 @@ front-door gate. See `sglang-metal/` for the build + launch scripts and a
 head-to-head benchmark against Track A.
 
 Reality check: it runs on the same MLX runtime as oMLX, so peak throughput is
-bounded by the same memory bandwidth. The bet is that SGLang's scheduler packs
-concurrent batches better at the edge — measured, not assumed.
+bounded by the same memory bandwidth. The bet was that SGLang's scheduler packs
+concurrent batches better at the edge.
+
+**Result (tested Aug 2026): SGLang-MLX builds and launches on this Mac, but
+does _not_ yet serve Qwen3.8-27B.** Two model-specific walls, both real:
+
+1. **Hybrid-GDN.** Qwen3.8 uses gated-delta-net (linear-attention) layers. The
+   default mamba `extra_buffer` cache path asserts CUDA/XPU only. Worked around
+   with `--mamba-radix-cache-strategy no_buffer --disable-overlap-schedule
+   --page-size 1` — got past it.
+2. **VLM checkpoint.** The `mlx-community/Qwen3.8-27B-*` builds are vision
+   models (`Qwen3_5ForConditionalGeneration`). SGLang-MLX auto-enables
+   multimodal for that arch, can't register the MLX image processor, and gives
+   no CLI flag to force text-only → `Unrecognized image processor`.
+
+So the head-to-head never got to run for *this* model. The build recipe and
+launch script (`build-sglang-metal.sh`, `sglang-metal/`) are kept — they work
+today for pure-text MLX models and will fit Qwen3.8 once SGLang's MLX VLM/GDN
+support lands. **For Qwen3.8-27B concurrency right now, Track A is the answer.**
 
 ## Notes
 
