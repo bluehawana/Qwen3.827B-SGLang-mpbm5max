@@ -16,6 +16,14 @@ uv run python/sglang/kernels/aot/setup_metal.py install || { echo "KERNEL BUILD 
 if [ -f python/pyproject_other.toml ]; then
   rm -f python/pyproject.toml && mv python/pyproject_other.toml python/pyproject.toml
 fi
+echo "=== applying Qwen3.8 MLX patches ==="
+# Two small fixes to SGLang's MLX backend (see sglang-metal/PATCH-NOTES.md).
+PATCH="$HOME/Projects/qwen3.8concurent/sglang-metal/patches/sglang-mlx-qwen38.patch"
+if [ -f "$PATCH" ]; then
+  git apply --check "$PATCH" 2>/dev/null && git apply "$PATCH" && echo "patch applied" \
+    || echo "patch already applied or did not apply cleanly — continuing"
+fi
+
 echo "=== installing sglang[all_mps] (no Rust exts) ==="
 # The Rust extension modules are optional accelerators; MLX inference doesn't
 # need them and we have no cargo toolchain, so skip them per SGLang's own flag.
