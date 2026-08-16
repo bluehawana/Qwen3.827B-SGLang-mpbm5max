@@ -1,5 +1,24 @@
 # SGLang-Metal patches for Qwen3.8-27B-8bit (MLX)
 
+> **Update (concurrent-16 branch):** two more patches landed after the initial
+> single-request success, both found by benchmarking under real concurrency:
+>
+> 4. `managers/overlap_utils.py` — `stash()`/`publish()` device mismatch:
+>    payload tensors arrive on CPU from the MLX side while the future-map
+>    buffers live on `mps:0`. Crash (`Expected all tensors to be on the same
+>    device`) at any N≥2 batch. Fix: move indices/values to the buffer's device.
+> 5. `mem_cache/unified_cache/components/mamba_component.py` — the radix
+>    prefix-match/insert/evict paths call
+>    `req_to_token_pool.mamba_allocator.{alloc,free}` at 9 sites (same family
+>    as patch 2, only reachable on prefix-cache hits under concurrency). Fix:
+>    `_mamba_alloc()` helper with getattr fallback to `mamba_pool`.
+>
+> With all patches: **N=16 concurrent, 16/16 ok, 0 errors** on
+> Qwen3.8-27B-8bit (1.5k-token prompts, 64-token outputs, M-series 128 GB):
+> N=4 → 7.1 agg tok/s, N=8 → 7.8, N=16 → 16.0 (scaling still climbing at 16).
+> Numbers taken with a second 30 GB server (oMLX) resident — do NOT do that:
+> the run ended with oMLX hitting a Metal OOM. One model server at a time.
+
 Date: 2026-08-16. Result: **SERVES** — SGLang's native MLX backend serves
 `mlx-community/Qwen3.8-27B-8bit` on :30000 and answers chat completions
 (smoke test: "Say OK" -> thinks briefly, answers "OK", ~1.9 s end-to-end).
