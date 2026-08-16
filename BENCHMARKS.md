@@ -5,21 +5,26 @@ Method: `bench_concurrency.py` — N simultaneous requests with **distinct**
 ~1,500-token prompts (prefix cache can't mask work), non-streaming, each
 server **alone on the GPU** (this matters: see "contention" below).
 
-## Head-to-head: oMLX vs patched SGLang-MLX
+## Three-way: oMLX vs patched SGLang-MLX vs Ollama
 
-Aggregate output tok/s (and p50 latency), 64 output tokens per request:
+Aggregate output tok/s (and p50 latency), 64 output tokens per request.
+oMLX/SGLang run the MLX 8-bit build; Ollama runs the GGUF Q8_0
+(`AtomicChat/Qwen3.8-27B-GGUF:Q8_0`) with `OLLAMA_NUM_PARALLEL=16`:
 
-| N concurrent | oMLX | SGLang-MLX (patched) |
-|---:|---:|---:|
-| 1 | **12.0** (5.3 s) | 10.3 (6.2 s) |
-| 2 | **17.9** (7.1 s) | 15.9 (8.1 s) |
-| 4 | **20.0** (12.8 s) | 19.8 (12.9 s) |
-| 8 | 20.1 (25.2 s) | **21.6** (23.7 s) |
-| 16 | 19.8 (51.1 s) | **21.0** (42.7 s) |
-| **16, decode-heavy** (256 out) | 35.7 (114 s) | **47.4** (86 s) |
+| N concurrent | oMLX | SGLang-MLX (patched) | Ollama 0.32 (GGUF) |
+|---:|---:|---:|---:|
+| 1 | **12.0** (5.3 s) | 10.3 (6.2 s) | 6.8 (9.4 s) |
+| 2 | **17.9** (7.1 s) | 15.9 (8.1 s) | 14.4 (8.9 s) |
+| 4 | **20.0** (12.8 s) | 19.8 (12.9 s) | 14.3 (14.4 s) |
+| 8 | 20.1 (25.2 s) | **21.6** (23.7 s) | 13.8 (24.1 s) |
+| 16 | 19.8 (51.1 s) | **21.0** (42.7 s) | 13.6 (40.5 s) |
+| **16, decode-heavy** (256 out) | 35.7 (114 s) | **47.4** (86 s) | 16.8 (132 s) |
 
-All cells: **N/N requests succeeded, zero errors** — both servers genuinely
-handle 16 concurrent clients on this hardware.
+All cells: **N/N requests succeeded, zero errors** — all three servers
+genuinely handle 16 concurrent clients on this hardware. Ollama is the
+easiest to set up and completely stable, but the MLX engines are ~1.5× faster
+at the plateau and ~2–3× faster decode-heavy (Ollama's GGUF/Metal path also
+never scales past its N=2 aggregate — its slots serialize more).
 
 ## Findings
 
