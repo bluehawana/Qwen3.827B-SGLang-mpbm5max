@@ -1,0 +1,25 @@
+# Protocol: distinct prompts ~1500 tok in, 64 tok out (except noted); solo server on GPU; M-series 128GB
+## oMLX (server as-shipped, max_concurrent_requests=8 default)
+model=Qwen3.8-27B-8bit N= 1 in≈1500 out=64 via=127.0.0.1:8000  wall=   5.3s lat_p50=   5.3s lat_max=   5.3s agg= 12.0 out-tok/s ok=1 err=0
+model=Qwen3.8-27B-8bit N= 2 in≈1500 out=64 via=127.0.0.1:8000  wall=   7.1s lat_p50=   7.1s lat_max=   7.1s agg= 17.9 out-tok/s ok=2 err=0
+model=Qwen3.8-27B-8bit N= 4 in≈1500 out=64 via=127.0.0.1:8000  wall=  12.8s lat_p50=  12.8s lat_max=  12.8s agg= 20.0 out-tok/s ok=4 err=0
+model=Qwen3.8-27B-8bit N= 8 in≈1500 out=64 via=127.0.0.1:8000  wall=  25.4s lat_p50=  25.2s lat_max=  25.4s agg= 20.1 out-tok/s ok=8 err=0
+model=Qwen3.8-27B-8bit N=16 in≈1500 out=64 via=127.0.0.1:8000  wall=  51.8s lat_p50=  51.1s lat_max=  51.7s agg= 19.8 out-tok/s ok=16 err=0
+## oMLX decode-heavy (256 out)
+model=Qwen3.8-27B-8bit N=16 in≈1500 out=256 via=127.0.0.1:8000  wall= 114.8s lat_p50= 114.2s lat_max= 114.8s agg= 35.7 out-tok/s ok=16 err=0
+## SGLang-MLX patched (max-running-requests=16, radix cache, no_buffer mamba)
+model=Qwen3.8-27B-8bit/snapshots/815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9/ N= 1 in≈1500 out=64 via=127.0.0.1:30000 wall=   6.2s lat_p50=   6.2s lat_max=   6.2s agg= 10.3 out-tok/s ok=1 err=0
+model=Qwen3.8-27B-8bit/snapshots/815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9/ N= 2 in≈1500 out=64 via=127.0.0.1:30000 wall=   8.1s lat_p50=   8.1s lat_max=   8.1s agg= 15.9 out-tok/s ok=2 err=0
+model=Qwen3.8-27B-8bit/snapshots/815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9/ N= 4 in≈1500 out=64 via=127.0.0.1:30000 wall=  12.9s lat_p50=  12.9s lat_max=  12.9s agg= 19.8 out-tok/s ok=4 err=0
+model=Qwen3.8-27B-8bit/snapshots/815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9/ N= 8 in≈1500 out=64 via=127.0.0.1:30000 wall=  23.7s lat_p50=  23.7s lat_max=  23.7s agg= 21.6 out-tok/s ok=8 err=0
+model=Qwen3.8-27B-8bit/snapshots/815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9/ N=16 in≈1500 out=64 via=127.0.0.1:30000 wall=  48.7s lat_p50=  42.7s lat_max=  48.7s agg= 21.0 out-tok/s ok=16 err=0
+## SGLang decode-heavy (256 out)
+model=Qwen3.8-27B-8bit/snapshots/815b83c0df8ffd1d1b5244cf75fd6ef14fca9ef9/ N=16 in≈1500 out=256 via=127.0.0.1:30000 wall=  86.5s lat_p50=  86.5s lat_max=  86.5s agg= 47.4 out-tok/s ok=16 err=0
+## Ollama 0.32.13 GGUF Q8_0 (private instance :11500, OLLAMA_NUM_PARALLEL=16, ctx 8192/slot)
+model=qwen3.8:atomic-q8 N= 1 in≈1500 out=64 via=127.0.0.1:11500 wall=   9.4s lat_p50=   9.4s lat_max=   9.4s agg=  6.8 out-tok/s ok=1 err=0
+model=qwen3.8:atomic-q8 N= 2 in≈1500 out=64 via=127.0.0.1:11500 wall=   8.9s lat_p50=   8.9s lat_max=   8.9s agg= 14.4 out-tok/s ok=2 err=0
+model=qwen3.8:atomic-q8 N= 4 in≈1500 out=64 via=127.0.0.1:11500 wall=  17.9s lat_p50=  14.4s lat_max=  17.9s agg= 14.3 out-tok/s ok=4 err=0
+model=qwen3.8:atomic-q8 N= 8 in≈1500 out=64 via=127.0.0.1:11500 wall=  37.0s lat_p50=  24.1s lat_max=  37.0s agg= 13.8 out-tok/s ok=8 err=0
+model=qwen3.8:atomic-q8 N=16 in≈1500 out=64 via=127.0.0.1:11500 wall=  75.2s lat_p50=  40.5s lat_max=  75.2s agg= 13.6 out-tok/s ok=16 err=0
+## Ollama decode-heavy (256 out)
+model=qwen3.8:atomic-q8 N=16 in≈1500 out=256 via=127.0.0.1:11500 wall= 244.0s lat_p50= 131.6s lat_max= 244.0s agg= 16.8 out-tok/s ok=16 err=0

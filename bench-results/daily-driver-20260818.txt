@@ -1,0 +1,21 @@
+# Daily-driver shootout: single stream (N=1), ~1500 tok in / 256 out, oMLX server
+model=Qwen3.8-27B-8bit N= 1 in≈1500 out=256 via=127.0.0.1:8000  wall=  43.8s lat_p50=  43.8s lat_max=  43.8s agg=  5.8 out-tok/s ok=1 err=0
+model=Qwen3.8-27B-4bit N= 1 in≈1500 out=256 via=127.0.0.1:8000  wall=  34.4s lat_p50=  34.4s lat_max=  34.4s agg=  7.4 out-tok/s ok=1 err=0
+model=Qwen3-Coder-30B-A3B-Instruct-MLX-8bit N= 1 in≈1500 out=256 via=127.0.0.1:8000  wall=  26.4s lat_p50=  26.4s lat_max=  26.4s agg=  9.7 out-tok/s ok=1 err=0
+## warm runs (model already resident)
+model=Qwen3.8-27B-8bit N= 1 in≈1500 out=256 via=127.0.0.1:8000  wall=  44.9s lat_p50=  44.9s lat_max=  44.9s agg=  5.7 out-tok/s ok=1 err=0
+model=Qwen3.8-27B-4bit N= 1 in≈1500 out=256 via=127.0.0.1:8000  wall=  27.6s lat_p50=  27.5s lat_max=  27.5s agg=  9.3 out-tok/s ok=1 err=0
+model=Qwen3-Coder-30B-A3B-Instruct-MLX-8bit N= 1 in≈1500 out=256 via=127.0.0.1:8000  wall=   6.5s lat_p50=   6.5s lat_max=   6.5s agg= 39.6 out-tok/s ok=1 err=0
+## mtplx serve, MTP depth-3 (speculative), warm
+model=mtplx-qwen38-27b-optimized-speed N= 1 in≈1500 out=256 via=127.0.0.1:8600  wall=  26.8s lat_p50=  26.8s lat_max=  26.8s agg=  9.6 out-tok/s ok=1 err=0
+model=mtplx-qwen38-27b-optimized-speed N= 1 in≈1500 out=256 via=127.0.0.1:8600  wall=  27.3s lat_p50=  27.3s lat_max=  27.3s agg=  9.4 out-tok/s ok=1 err=0
+## decode-dominant (100 in / 512 out), MTP ON
+model=mtplx-qwen38-27b-optimized-speed N= 1 in≈100 out=512 via=127.0.0.1:8600  wall=  48.6s lat_p50=  48.6s lat_max=  48.6s agg= 10.5 out-tok/s ok=1 err=0
+## decode-dominant (100 in / 512 out), MTP OFF (plain AR)
+model=mtplx-qwen38-27b-optimized-speed N= 1 in≈100 out=512 via=127.0.0.1:8600  wall=  35.0s lat_p50=  35.0s lat_max=  35.0s agg= 14.6 out-tok/s ok=1 err=0
+## MTP greedy A/B (512-tok generation, temperature 0, same model+server)
+AR  (no-mtp):        15.1 / 15.2 tok/s
+MTP depth-3 exact:   15.2 / 12.9 tok/s
+MTP depth-3 turbo:   15.3 / 15.1 tok/s
+=> NO MTP speedup measured on this machine (model card claims 24->56; our AR baseline is 15).
+## VERDICT: Qwen3-Coder-30B-A3B (MoE, 8-bit MLX, oMLX) is the daily driver: 39.6 tok/s wall-inclusive vs 5.7 for dense Qwen3.8-8bit (~7x), 6.5s vs 45s for a 1.5k-in/256-out turn.

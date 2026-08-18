@@ -1,0 +1,170 @@
+diff --git a/python/sglang/srt/hardware_backend/mlx/kv_cache/auxiliary_state.py b/python/sglang/srt/hardware_backend/mlx/kv_cache/auxiliary_state.py
+index 8fe3b48..f489c6e 100644
+--- a/python/sglang/srt/hardware_backend/mlx/kv_cache/auxiliary_state.py
++++ b/python/sglang/srt/hardware_backend/mlx/kv_cache/auxiliary_state.py
+@@ -317,6 +317,19 @@ class MlxAuxiliaryStateComponent(MambaComponent):
+         TreeComponent.__init__(self, cache, params)
+         self.enable_mamba_extra_buffer = False
+         self._mamba_pool_host = None
++        # This __init__ bypasses MambaComponent.__init__ (its HybridReqToTokenPool
++        # assert does not hold for the MLX pool), but inherited MambaComponent
++        # methods still read these attributes (e.g. finalize_match_result_in_tree_core
++        # uses mamba_checkpoint_grid). Mirror the parent's initialization.
++        from sglang.srt.runtime_context import (
++            get_exec,
++            mamba_cache_chunk_size,
++            mamba_checkpoint_grid,
++        )
++
++        self.mamba_cache_chunk_size = mamba_cache_chunk_size()
++        self.mamba_checkpoint_grid = mamba_checkpoint_grid(params.page_size)
++        self.mamba_max_states_per_path = get_exec().mamba.mamba_max_states_per_path
+ 
+     @staticmethod
+     def _tracked_value(req) -> tuple[object | None, bool]:
+diff --git a/python/sglang/srt/managers/overlap_utils.py b/python/sglang/srt/managers/overlap_utils.py
+index 9e2f191..8b9b6cf 100644
+--- a/python/sglang/srt/managers/overlap_utils.py
++++ b/python/sglang/srt/managers/overlap_utils.py
+@@ -476,7 +476,13 @@ class FutureMap:
+         indices = future_indices
+         if indices.shape[0] == 0:
+             return  # DP idle
+-        self.new_seq_lens_buf[indices] = new_seq_lens.to(self.new_seq_lens_buf.dtype)
++        # MLX backend: see stash() — keep device consistent with the buffer.
++        buf_device = self.new_seq_lens_buf.device
++        if indices.device != buf_device:
++            indices = indices.to(buf_device)
++        self.new_seq_lens_buf[indices] = new_seq_lens.to(
++            device=buf_device, dtype=self.new_seq_lens_buf.dtype
++        )
+         publish_confidence = self.needs_confidence_relay and confidence is not None
+         if publish_confidence:
+             self.confidence_relay.scatter(indices, confidence)
+@@ -509,8 +515,14 @@ class FutureMap:
+         if not self._forward_buf_initialized:
+             self._lazy_init_forward_buf(payload)
+         self._maybe_init_dsa_topk_indices_buf(payload)
++        # MLX backend: payload tensors arrive on CPU (converted from mlx arrays)
++        # while the bufs live on self.device (mps). `.to(dtype)` alone keeps the
++        # device mismatch — move indices and values to the buffer's device.
++        buf_device = self.output_tokens_buf.device
++        if indices.device != buf_device:
++            indices = indices.to(buf_device)
+         self.output_tokens_buf[indices] = payload.bonus_tokens.to(
+-            self.output_tokens_buf.dtype
++            device=buf_device, dtype=self.output_tokens_buf.dtype
+         )
+ 
+         if self.need_topk:
+diff --git a/python/sglang/srt/managers/scheduler_components/pool_stats_observer.py b/python/sglang/srt/managers/scheduler_components/pool_stats_observer.py
+index 087e266..462ef33 100644
+--- a/python/sglang/srt/managers/scheduler_components/pool_stats_observer.py
++++ b/python/sglang/srt/managers/scheduler_components/pool_stats_observer.py
+@@ -246,7 +246,13 @@ class SchedulerPoolStatsObserver:
+         full_evictable_size = (
+             self.tree_cache.full_evictable_size() if is_mamba_radix_cache else 0
+         )
+-        mamba_available_size = self.req_to_token_pool.mamba_allocator.available_size()
++        # MLX backend: MlxAuxiliaryStateReqToTokenPool has no separate
++        # `mamba_allocator`; its `mamba_pool` (MlxAuxiliaryStatePool) exposes the
++        # allocator API (available_size/alloc/free) directly. Fall back to it.
++        mamba_allocator = getattr(self.req_to_token_pool, "mamba_allocator", None)
++        if mamba_allocator is None:
++            mamba_allocator = self.req_to_token_pool.mamba_pool
++        mamba_available_size = mamba_allocator.available_size()
+         # `mamba_usage`/`mamba_num_used` track the ACTIVE bf16 pool occupancy (running
+         # requests) -- this feeds throttle decisions (get_max_pool_usage) which asserts
+         # usage >= 0. With int8 checkpoints the radix-cached states live in a SEPARATE
+diff --git a/python/sglang/srt/mem_cache/unified_cache/components/mamba_component.py b/python/sglang/srt/mem_cache/unified_cache/components/mamba_component.py
+index fe5347a..fb42afc 100644
+--- a/python/sglang/srt/mem_cache/unified_cache/components/mamba_component.py
++++ b/python/sglang/srt/mem_cache/unified_cache/components/mamba_component.py
+@@ -77,6 +77,17 @@ class MambaComponent(TreeComponent):
+         # HiCache state
+         self._mamba_pool_host = None  # set to host mamba pool when HiCache enabled
+ 
++    def _mamba_alloc(self):
++        """Resolve the mamba slot allocator across backends.
++
++        CUDA pools expose a separate `mamba_allocator`; the MLX backend's
++        MlxAuxiliaryStateReqToTokenPool exposes the allocator API
++        (alloc/free/available_size) directly on its `mamba_pool`.
++        """
++        pool = self.cache.req_to_token_pool
++        allocator = getattr(pool, "mamba_allocator", None)
++        return allocator if allocator is not None else pool.mamba_pool
++
+     def needs_incremental_backup(self, node: UnifiedTreeNode) -> bool:
+         data = node.component_data[self.component_type]
+         return data.value is not None and data.host_value is None
+@@ -197,14 +208,14 @@ class MambaComponent(TreeComponent):
+         req = params.req
+         assert req is not None
+         if req.mamba_pool_idx is None:
+-            dst_index = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
++            dst_index = self._mamba_alloc().alloc(1)
+             if dst_index is None:
+                 # Pin the window via inc/dec_lock_ref so evict's SWA release
+                 # stops at this request's window boundary instead of walking to
+                 # root and over-decrementing locks held by other requests.
+                 lock_result = self.cache.inc_lock_ref(result.best_match_node)
+                 self.cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+-                dst_index = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
++                dst_index = self._mamba_alloc().alloc(1)
+                 self.cache.dec_lock_ref(
+                     result.best_match_node, lock_result.to_dec_params()
+                 )
+@@ -485,10 +496,10 @@ class MambaComponent(TreeComponent):
+ 
+     def _alloc_mamba_slot(self) -> torch.Tensor:
+         """Allocate one mamba pool slot, evicting if necessary."""
+-        slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
++        slot = self._mamba_alloc().alloc(1)
+         if slot is None:
+             self.cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+-            slot = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
++            slot = self._mamba_alloc().alloc(1)
+             assert slot is not None, "Can not alloc mamba cache"
+         return slot
+ 
+@@ -517,7 +528,7 @@ class MambaComponent(TreeComponent):
+         if self.int8_ckpt_pool is not None:
+             self.int8_ckpt_pool.free(mamba_value)
+         else:
+-            self.cache.req_to_token_pool.mamba_allocator.free(mamba_value)
++            self._mamba_alloc().free(mamba_value)
+ 
+     def prepare_for_caching_req(
+         self,
+@@ -574,7 +585,7 @@ class MambaComponent(TreeComponent):
+                         )
+                     )
+                     mamba_value_donated = self._commit_int8_checkpoint(src_active)
+-                    self.cache.req_to_token_pool.mamba_allocator.free(src_active)
++                    self._mamba_alloc().free(src_active)
+                 else:
+                     mamba_value_donated = self._commit_int8_checkpoint(
+                         req.mamba_pool_idx.view(-1)
+@@ -658,10 +669,10 @@ class MambaComponent(TreeComponent):
+             )
+         ):
+             return PrepareLoadBackResult()
+-        dst = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
++        dst = self._mamba_alloc().alloc(1)
+         if dst is None:
+             self.cache.evict(EvictParams(num_tokens=0, mamba_num=1))
+-            dst = self.cache.req_to_token_pool.mamba_allocator.alloc(1)
++            dst = self._mamba_alloc().alloc(1)
+             assert dst is not None, "Cannot alloc mamba for load_back"
+         req.mamba_pool_idx = dst[0]
+         return PrepareLoadBackResult(allocated_mamba_slot=dst)
+@@ -671,7 +682,7 @@ class MambaComponent(TreeComponent):
+     ) -> None:
+         # A called-off load-back returns the slot prepare allocated and clears req (the H->D copy never ran).
+         if not success and prep.allocated_mamba_slot is not None:
+-            self.cache.req_to_token_pool.mamba_allocator.free(prep.allocated_mamba_slot)
++            self._mamba_alloc().free(prep.allocated_mamba_slot)
+             req.mamba_pool_idx = None
+ 
+     def prepare_prefetch(
