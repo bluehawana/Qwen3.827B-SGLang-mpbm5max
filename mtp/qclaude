@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# qclaude — run Claude Code against the LOCAL oMLX server.
+#
+# Mirrors `omlx launch claude` (env-var only; never touches ~/.claude/settings.json,
+# so your normal `claude` keeps using Anthropic). Usage, from any folder:
+#
+#   qclaude                          # Qwen3-Coder-30B-A3B MoE, 8-bit — the daily
+#                                    # driver: ~7x faster turns than dense 27B
+#                                    # (benchmarked 2026-08-18: 6.5s vs 45s/turn)
+#   qclaude --dense                  # Qwen3.8-27B 8-bit + MTP  ~36 tok/s decode  (best quality/speed)
+#   qclaude --fast                   # Qwen3.8-27B 4-bit + MTP  ~62 tok/s decode
+#   qclaude --max                    # Qwen3.8-27B bf16  + MTP  ~26 tok/s decode  (was 9 w/o MTP)
+#                                    # All three tiers had the EigenLabs Qwen3.8 MTP head merged on
+#                                    # 2026-08-18 (model-mtp.safetensors in each HF snapshot dir);
+#                                    # decode is bandwidth-bound, so tok/s ~ 1/bytes-per-pass.
+#   qclaude --effort low|medium|xhigh  # Qwen3.8 reasoning effort (default: medium; xhigh = the
+#                                    # model's own default = ~20k thinking tokens per turn!)
+#   qclaude --full-tools             # send Claude Code's full 24-tool schema (~17k tokens) instead
+#                                    # of the lean set (~4k tokens). LSP is always dropped: Claude
+#                                    # Code adds it lazily on turn 2, which busts the prefix cache.
+#   (also sets CLAUDE_CODE_TOTAL_TOKENS_REMINDER=off: Claude Code otherwise injects a
+#    changing <total_tokens> system message every turn, which oMLX hoists next to the
+#    first one -> the whole tail of a long session re-prefills every turn, ~2 min at 60k+)
+#   qclaude --dangerously-skip-permissions
+#   qclaude -p "explain app/lib/three/viewer.ts"
+#   QCLAUDE_MODEL=Qwen3.6-35B-A3B-4bit qclaude   # any model id from `curl :8000/v1/models`
+#
+# Env overrides: QCLAUDE_MODEL, QCLAUDE_HOST, QCLAUDE_PORT, QCLAUDE_API_KEY, QCLAUDE_CONTEXT,
+#                QCLAUDE_EFFORT (low|medium|xhigh), QCLAUDE_FULL_TOOLS=1
+set -euo pipefail
+
+MODEL_MOE="Qwen3-Coder-30B-A3B-Instruct-MLX-8bit"
+MODEL_16BIT="mlx-community--Qwen3.8-27B-bf16"
+MODEL_8BIT="mlx-community--Qwen3.8-27B-8bit"
+MODEL_4BIT="mlx-community--Qwen3.8-27B-4bit"
+
+# Tier flags are stripped from the args passed to claude.
+TIER="moe"; _ARGS=(); EFFORT="${QCLAUDE_EFFORT:-medium}"; FULL_TOOLS="${QCLAUDE_FULL_TOOLS:-0}"; _NEXT_EFFORT=0
+for a in "$@"; do
+  if [[ $_NEXT_EFFORT -eq 1 ]]; then EFFORT="$a"; _NEXT_EFFORT=0; continue; fi
+  case "$a" in
+    --dense)      TIER="8" ;;
+    --fast)       TIER="4" ;;
+    --max)        TIER="16" ;;
+    --effort)     _NEXT_EFFORT=1 ;;
+    --effort=*)   EFFORT="${a#--effort=}" ;;
+    --full-tools) FULL_TOOLS=1 ;;
+    *)            _ARGS+=("$a") ;;
+  esac
+done
+case "$EFFORT" in low|medium|xhigh) ;; *) echo "qclaude: --effort must be low|medium|xhigh (got '$EFFORT')" >&2; exit 2 ;; esac
+set -- "${_ARGS[@]+"${_ARGS[@]}"}"
+
+if [[ -n "${QCLAUDE_MODEL:-}" ]]; then MODEL="$QCLAUDE_MODEL"
+elif [[ "$TIER" == "4" ]]; then MODEL="$MODEL_4BIT"
+elif [[ "$TIER" == "16" ]]; then MODEL="$MODEL_16BIT"
+elif [[ "$TIER" == "8" ]]; then MODEL="$MODEL_8BIT"
+else MODEL="$MODEL_MOE"; fi
+HOST="${QCLAUDE_HOST:-127.0.0.1}"
+PORT="${QCLAUDE_PORT:-8000}"
+CONTEXT="${QCLAUDE_CONTEXT:-131072}"     # oMLX max_context_window for this model
+BASE_URL="http://${HOST}:${PORT}"
+SETTINGS="${HOME}/.omlx/settings.json"
+
+# --- API key: read from oMLX settings unless overridden --------------------
+API_KEY="${QCLAUDE_API_KEY:-}"
+if [[ -z "$API_KEY" && -f "$SETTINGS" ]]; then
+  API_KEY="$(python3 - "$SETTINGS" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("auth", {}).get("api_key", "") or "")
+except Exception:
+    print("")
+PY
+)"
+fi
+[[ -z "$API_KEY" ]] && API_KEY="omlx"   # open server fallback
+
+# --- make sure the oMLX server is up ----------------------------------------
+if ! curl -fs --max-time 3 "${BASE_URL}/v1/models" -H "Authorization: Bearer ${API_KEY}" >/dev/null 2>&1; then
+  echo "qclaude: oMLX not answering on ${BASE_URL} — starting it…" >&2
+  if command -v omlx >/dev/null 2>&1; then
+    omlx start --timeout 90 >&2 || { echo "qclaude: 'omlx start' failed" >&2; exit 1; }
+  else
+    echo "qclaude: 'omlx' CLI not found. Start oMLX.app manually, then retry." >&2
+    exit 1
+  fi
+fi
+
+# --- check the model is served; fall back moe → 8 → 4 -----------------------
+served() { curl -fs --max-time 5 "${BASE_URL}/v1/models" -H "Authorization: Bearer ${API_KEY}" | grep -q "\"$1\""; }
+if ! served "$MODEL"; then
+  for alt in "$MODEL_MOE" "$MODEL_8BIT" "$MODEL_4BIT"; do
+    [[ "$alt" == "$MODEL" ]] && continue
+    if served "$alt"; then
+      echo "qclaude: '${MODEL}' not available yet on ${BASE_URL} — using ${alt}." >&2
+      MODEL="$alt"; break
+    fi
+  done
+fi
+if ! served "$MODEL"; then
+  echo "qclaude: model '${MODEL}' not found on ${BASE_URL}. Available:" >&2
+  curl -fs --max-time 5 "${BASE_URL}/v1/models" -H "Authorization: Bearer ${API_KEY}" \
+    | python3 -c 'import json,sys; [print("  -", m["id"]) for m in json.load(sys.stdin)["data"]]' >&2 || true
+  exit 1
+fi
+
+# --- pin the model's reasoning effort server-side (Claude Code can't send it) --
+# oMLX ignores Anthropic `output_config.effort`; Qwen3.8's chat template then
+# defaults to xhigh (unbounded thinking). Set it as the model's default via the
+# admin API. Best-effort: silently skipped if the admin API is unreachable.
+COOKIE_JAR="$(mktemp -t qclaude-cj.XXXXXX)"; trap 'rm -f "$COOKIE_JAR"' EXIT
+if curl -fs --max-time 5 -c "$COOKIE_JAR" -X POST "${BASE_URL}/admin/api/login" \
+     -H 'Content-Type: application/json' -d "{\"api_key\":\"${API_KEY}\",\"remember\":false}" >/dev/null 2>&1; then
+  if ! curl -fs --max-time 10 -b "$COOKIE_JAR" -X PUT "${BASE_URL}/admin/api/models/${MODEL}/settings" \
+       -H 'Content-Type: application/json' \
+       -d "{\"chat_template_kwargs\":{\"reasoning_effort\":\"${EFFORT}\"}}" >/dev/null 2>&1; then
+    echo "qclaude: warning — could not set reasoning_effort=${EFFORT} on ${MODEL} (admin API)" >&2
+  fi
+else
+  echo "qclaude: warning — admin login failed; reasoning_effort left at server default" >&2
+fi
+
+# --- tool set: stable + lean ------------------------------------------------
+# LSP is added lazily on turn 2 and shifts the 17k-token tools block -> full
+# re-prefill. The lean set additionally drops niche tools (Workflow alone is
+# 22k chars) so the system+tools prefix is ~4k tokens instead of ~17k.
+if [[ "$FULL_TOOLS" == "1" ]]; then
+  DISALLOWED="LSP"
+else
+  DISALLOWED="LSP,Workflow,ScheduleWakeup,CronCreate,CronDelete,CronList,EnterWorktree,ExitWorktree,ReportFindings,NotebookEdit,SendMessage,TaskOutput,TaskStop,TaskGet,TaskList,TaskCreate,TaskUpdate"
+fi
+HAS_DISALLOWED=0
+for a in "$@"; do [[ "$a" == "--disallowedTools" || "$a" == --disallowedTools=* ]] && HAS_DISALLOWED=1; done
+
+# --- find claude ------------------------------------------------------------
+CLAUDE_BIN="$(command -v claude || true)"
+[[ -z "$CLAUDE_BIN" && -x "$HOME/.claude/local/claude" ]] && CLAUDE_BIN="$HOME/.claude/local/claude"
+[[ -z "$CLAUDE_BIN" ]] && { echo "qclaude: claude CLI not found (npm i -g @anthropic-ai/claude-code)" >&2; exit 1; }
+
+# --- default --model to the local one unless the caller passed their own ----
+PASS_MODEL=1
+for a in "$@"; do [[ "$a" == "--model" || "$a" == --model=* ]] && PASS_MODEL=0; done
+ARGS=("$@")
+[[ $PASS_MODEL -eq 1 ]] && ARGS=(--model "$MODEL" "${ARGS[@]}")
+[[ $HAS_DISALLOWED -eq 0 ]] && ARGS=(--disallowedTools "$DISALLOWED" "${ARGS[@]}")
+
+echo "qclaude → ${MODEL} @ ${BASE_URL}  effort=${EFFORT} tools=$([[ "$FULL_TOOLS" == "1" ]] && echo full || echo lean)  (cwd: $(pwd))" >&2
+
+# Same env contract as `omlx launch claude`; scrub bundled-Python vars, drop any
+# inherited Anthropic creds so nothing leaks to the cloud.
+unset PYTHONHOME PYTHONPATH PYTHONDONTWRITEBYTECODE
+exec env \
+  ANTHROPIC_BASE_URL="$BASE_URL" \
+  ANTHROPIC_AUTH_TOKEN="$API_KEY" \
+  ANTHROPIC_API_KEY="" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL" \
+  CLAUDE_CODE_SUBAGENT_MODEL="$MODEL" \
+  CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CONTEXT" \
+  CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT" \
+  CLAUDE_CODE_TOTAL_TOKENS_REMINDER=off \
+  CLAUDE_CODE_ATTRIBUTION_HEADER=0 \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  API_TIMEOUT_MS=3000000 \
+  "$CLAUDE_BIN" "${ARGS[@]}"
