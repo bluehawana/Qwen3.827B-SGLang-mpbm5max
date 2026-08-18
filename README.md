@@ -6,8 +6,8 @@ which reaches ~10 concurrent on an NVIDIA DGX Spark with **SGLang**.
 
 **Why not just port that repo?** Its *speed* comes from CUDA-only tricks —
 NVFP4 W4A4 on Blackwell tensor cores, FP8 KV cache, `flashinfer`, mamba radix
-cache, MTP/EAGLE speculative decoding, CUDA graphs — none of which exist on
-Metal. (SGLang itself *does* now have an early Apple-Silicon path via a native
+cache, EAGLE speculative decoding, CUDA graphs — none of which exist on
+Metal (native **MTP** speculative decoding *does* work on MLX now — see **Track D**). (SGLang itself *does* now have an early Apple-Silicon path via a native
 MLX backend — see **Track B** below — but it runs on the same MLX runtime as
 oMLX, so the memory-bandwidth ceiling is the same; it doesn't unlock those
 CUDA features.) So the durable idea to port is not the engine, it's the policy:
@@ -18,7 +18,10 @@ CUDA features.) So the durable idea to port is not the engine, it's the policy:
 
 This repo ships that as **Track A** (oMLX + a gateway, stable today) and
 tracks the faithful engine port as **Track B** (SGLang-native-MLX,
-experimental).
+experimental). **Track D** ([`mtp/`](mtp/README.md)) is the single-stream
+speed story: native MTP speculative decoding for Qwen3.8-27B on oMLX (bf16
+9→26 tok/s, 8-bit 36, 4-bit 62) plus a Claude Code launcher that keeps the
+prefix cache warm.
 
 ## What your Mac can actually do
 
@@ -96,7 +99,7 @@ and your prompts are short; drop to 3 for very long contexts.
 | FP8 KV cache | (not available in MLX) — smaller model tier instead |
 | radix / mamba cache | oMLX paged prefix cache — off by default here for distinct prompts |
 | NVFP4 W4A4 | MLX 4-bit / 8-bit quant |
-| MTP EAGLE speculative decode | (not available in MLX) |
+| MTP EAGLE speculative decode | native MTP via oMLX `mtp_enabled` — see [Track D](mtp/README.md): bf16 9→26 tok/s, 4-bit 62 tok/s |
 | chunked prefill 8192 | oMLX continuous batching (built-in) |
 
 Same shape, honest about what the hardware allows.

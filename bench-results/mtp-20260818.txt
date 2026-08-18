@@ -1,0 +1,18 @@
+# Native MTP speculative decoding, Qwen3.8-27B on oMLX, M5 Max 128 GB — 2026-08-18
+# Head: EigenLabs/Qwen3.8-27B-MTP-bf16 merged into mlx-community checkpoints (mtp/merge_mtp.py)
+# Bench: mtp/bench_stream.py (101-tok prompt, 300 new tokens, reasoning_effort=low, single stream)
+## bf16 A/B (same model, same server, load-toggle mtp_enabled)
+mlx-community--Qwen3.8-27B-bf16  MTP off:  300 tok in 32.41s ->  9.3 tok/s   (TTFT 1.13s)
+mlx-community--Qwen3.8-27B-bf16  MTP on :  300 tok in 11.58s -> 25.9 tok/s   (TTFT 1.19s)   +178%
+## all tiers, MTP on
+mlx-community--Qwen3.8-27B-8bit  MTP on :  300 tok in  8.35s -> 35.9 tok/s   (head quantized 8-bit/gs64)
+mlx-community--Qwen3.8-27B-4bit  MTP on :  300 tok in  4.87s -> 61.6 tok/s   (head kept bf16)
+## in-context (Claude Code via qclaude, bf16, 51k-token context, live session): ~14.4 tok/s (was 4-6)
+## draft acceptance seen in oMLX logs (Claude Code traffic): 75-99% ; 2.5-3.6 tokens/cycle (depth 3)
+## Claude Code prompt-stability fixes (qclaude): --disallowedTools LSP,... ; CLAUDE_CODE_TOTAL_TOKENS_REMINDER=off ; reasoning_effort=medium
+##   fresh 3-request agentic run, --dense (8bit): 29 s wall; turn-1 prefill 6.5k tok, turns 2-3 primed 831/1020 tok (prefix reused)
+##   before (bf16, full tools, xhigh): 87 s for the same run; the user's long session hit 2-min re-prefills per turn (53k of 76k tokens)
+## Ollama (MLX runner) reference, same machine
+qwen3.8:27b-mlx (Ollama library, modelopt mixed-precision, ships mtp.* tensors, self-draft): 300 tok in 4.5s -> 66.7 tok/s
+## Prior claim in daily-driver-20260818.txt "MTPLX MTP shows no gain" is superseded: that side-car was never imported
+## into the checkpoint index (oMLX: "MTPLX side-car detected but not imported"), so MTP was inactive in that A/B.
